@@ -1,0 +1,146 @@
+<html>
+
+<head>
+    <title>Async Upload & Compress</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css"
+        integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+</head>
+
+<body>
+    <div class="row h-100">
+        <div class="container px-5" style="margin-top: auto; margin-bottom: auto;">
+            <h2>Upload and Compress Your File!</h2>
+            <div class="row">
+                <div class="col">
+                    <form method="POST" enctype="multipart/form-data">
+                        <div class="form-group">
+                            <p>
+                                <small>if there is no compression process after uploading, it may be due to websocket
+                                    connection, please wait for the process or try to reupload the file</small>
+                            </p>
+                            <label for="file">put your file here</label>
+                            <input id="file" type="file" name="file" class="form-control-file">
+                        </div>
+                        <input type="button" value="Upload" class="btn btn-primary" id="but_upload">
+                    </form>
+                </div>
+            </div>
+            <div class="row my-2">
+                <div class="col">
+                    <div id="upload_message"></div>
+                    <div id="compress_message"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.4.1/jquery.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"
+        integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1"
+        crossorigin="anonymous"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"
+        integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM"
+        crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.1.4/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+
+    <script>
+        function createUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+    </script>
+    <script>
+        var route_key = createUUID()
+        $(document).ready(function () {
+            $("#but_upload").click(function () {
+
+                var fd = new FormData();
+                var files = $('#file')[0].files[0];
+                fd.append('file', files);
+                fd.append('route_key', route_key);
+                $.ajax({
+                    url: '',
+                    type: 'post',
+                    data: fd,
+                    contentType: false,
+                    processData: false,
+                    success: function (response) {
+                        if (response != 0) {
+                            if (response.res.status_code == 200) {
+                                $("#upload_message").html(`
+                                    <div class="alert alert-primary" role="alert">
+                                        <p><b>${response.res.message}</b><p>
+                                        <p>Grab your uploaded file: <a href="${response.res.img_url}">click here</a><p>
+                                    </div>
+                                `);
+                            } else {
+                                $("#upload_message").html(`
+                                    <div class="alert alert-danger" role="alert">
+                                        <p><b>${response.res.message}</b><p>
+                                    </div>
+                                `);
+                            }
+                        } else {
+                            alert('file not uploaded');
+                        }
+                    },
+                });
+            });
+        });
+    </script>
+    <script>
+        var WS_STOMP_URL = '{{ WS_STOMP_URL }}';
+        if (WS_STOMP_URL) {
+            var ws_stomp = new SockJS('{{ WS_STOMP_URL }}');
+            var client = Stomp.over(ws_stomp);
+        } else {
+            var ws_url = '{{WS_HOST_URL}}' + ":" + '{{MQ_WS_PORT}}' + '/ws';
+            var ws = new WebSocket(ws_url);
+            var client = Stomp.over(ws);
+        }
+
+        var on_connect = function () {
+            console.log('connected');
+            var exchange_route = "/exchange/" + '{{ MQ_EXCHANGE_KEY }}' + '/' + route_key;
+            client.subscribe(exchange_route, function (message) {
+                var body = "{" + message.body.substring(1, message.body.length - 1) + "}"
+                var body = JSON.parse(body);
+
+                $("#compress_message").html(`
+                    <div class="progress my-2">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                            role="progressbar" aria-valuenow="${body.percentage}" aria-valuemin="0" aria-valuemax="100" 
+                            style="width: ${body.percentage}%">
+                            compressing progress: ${body.percentage}%
+                        </div>
+                    </div>
+                    `);
+
+                if (body.status == "completed") {
+                    $("#compress_message").html(`
+                        <div class="alert alert-success" role="alert">
+                            <p><b>${body.message}</b><p>
+                            <p>Grab your compressed file: <a href="${body.url}">click here</a><p>
+                        </div>
+                    `)
+                }
+
+            }, {});
+        };
+        var on_error = function () {
+            console.log('error when connecting');
+            console.log('retry to connect....');
+            client.connect('{{MQ_USERNAME}}', '{{MQ_PASSWORD}}', on_connect, on_error, vhost);
+        };
+        var on_message_receive = function (message) {
+            console.log(message);
+        };
+
+        var vhost = '/' + '{{ MQ_VHOST }}';
+        client.connect('{{MQ_USERNAME}}', '{{MQ_PASSWORD}}', on_connect, on_error, vhost);
+    </script>
+</body>
+
+</html>
